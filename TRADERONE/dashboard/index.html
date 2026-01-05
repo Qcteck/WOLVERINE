@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>TraderOne Dashboard</title>
+<style>
+body{background:#020617;color:#e5e7eb;font-family:sans-serif;padding:20px}
+h1{color:#38bdf8}
+pre{background:#111;padding:10px;border-radius:5px;overflow:auto}
+</style>
+</head>
+<body>
+<h1>TraderOne Dashboard</h1>
+<pre id="logs">Logs seront affichés ici...</pre>
+<script>
+async function fetchLogs(){
+  const resp = await fetch('/logs.txt');
+  document.getElementById('logs').innerText = await resp.text();
+}
+setInterval(fetchLogs,3000);
+fetchLogs();
+</script>
+</body>
+</html>

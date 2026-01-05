@@ -1,0 +1,210 @@
+const TRADERONE_DEPOSIT_KEYFILE = process.env.TRADERONE_DEPOSIT_KEYFILE || "/opt/traderone-opt/keys/traderone_deposit.json";
+const USDC_MINT = process.env.USDC_MINT || "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+'use strict';
+
+const express = require('express');
+const http = require('http');
+const path = require('path');
+
+const { WebSocketServer } = require('ws');
+
+const app = express();
+require("./proxy-traderone")(app);
+app.disable('x-powered-by');
+app.use(express.json({ limit: '2mb' }));
+
+
+// WOLVERINE_REWRITE_BEGIN
+app.use("/wolverine/traderone/api", (req, res, next) => {
+  // ici req.url = "/balances2?wallet=..." => on préfixe /api
+  req.url = "/api" + req.url;
+  next();
+});
+// WOLVERINE_REWRITE_END
+// ===== Static front (public/) =====
+const PUBLIC_DIR = path.join(__dirname, 'public');
+app.use('/', express.static(PUBLIC_DIR, { maxAge: '1h', etag: true }));
+
+// ===== API =====
+app.get('/health', (req, res) => res.status(200).send('ok'));
+
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, service: 'traderone', ts: new Date().toISOString() });
+});
+
+app.get('/api/status', (req, res) => {
+  res.json({
+    ok: true,
+    mode: process.env.MODE || 'paper',
+    network: process.env.NETWORK || 'solana',
+    ts: new Date().toISOString()
+  });
+});
+
+// Stubs (remplace par tes vraies fonctions)
+app.post('/api/start', (req, res) => res.json({ ok: true, started: true, params: req.body || {} }));
+app.post('/api/stop',  (req, res) => res.json({ ok: true, stopped: true }));
+app.post('/api/swap',  (req, res) => res.json({ ok: true, simulated: true, request: req.body || {} }));
+
+// SPA fallback
+app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
+
+const HOST = process.env.HOST || '127.0.0.1';
+const PORT = parseInt(process.env.PORT || '8585', 10);
+
+const server = http.createServer(app);
+
+// ===== WebSocket (optionnel) =====
+const wss = new WebSocketServer({ server, path: '/ws' });
+wss.on('connection', (ws) => {
+  ws.send(JSON.stringify({ type: 'hello', ts: new Date().toISOString() }));
+  ws.on('message', (msg) => {
+    ws.send(JSON.stringify({ type: 'echo', msg: msg.toString() }));
+  });
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`[TraderOne] listening on http://${HOST}:${PORT}`);
+});
+
+
+// ===== WOLVERINE_BALANCES_API (server-side RPC, avoids browser CORS/403) =====
+const SOLANA_RPCS = [
+  "https://api.mainnet-beta.solana.com",
+  "https://solana-mainnet.g.alchemy.com/v2/demo",
+];
+
+async function solanaRpc(method, params) {
+  let lastErr = null;
+  for (const url of SOLANA_RPCS) {
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || data.error) throw new Error((data.error && data.error.message) || ("HTTP " + r.status));
+      return data.result;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("RPC failed");
+}
+
+// GET /api/balances?wallet=PUBLICKEY
+app.get("/api/balances", async (req, res) => {
+  try {
+    const wallet = String(req.query.wallet || "").trim();
+    if (!wallet) return res.status(400).json({ error: "missing wallet" });
+
+    const solRes = await solanaRpc("getBalance", [wallet]);
+    const sol = (solRes && solRes.value ? (solRes.value / 1_000_000_000) : 0);
+
+    const usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const tokRes = await solanaRpc("getTokenAccountsByOwner", [
+      wallet,
+      { mint: usdcMint },
+      { encoding: "jsonParsed" }
+    ]);
+
+    let usdc = 0;
+    const v = (tokRes && tokRes.value) || [];
+    if (v.length) {
+      usdc = v[0]?.account?.data?.parsed?.info?.tokenAmount?.uiAmount ?? 0;
+    }
+
+    res.json({ wallet, sol, usdc });
+  } catch (e) {
+    res.status(500).json({ error: String(e && e.message ? e.message : e) });
+  }
+});
+// ===== /WOLVERINE_BALANCES_API =====
+
+
+/* WOLVERINE_BALANCES2_BEGIN */
+(function(){
+  try {
+    // expose constants if not already defined globally
+    const USDC_MINT_LOCAL = process.env.USDC_MINT || "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const TRADERONE_DEPOSIT_KEYFILE_LOCAL = process.env.TRADERONE_DEPOSIT_KEYFILE || "/opt/traderone-opt/keys/traderone_deposit.json";
+
+    const fs = require("fs");
+    const { PublicKey, Keypair } = require("@solana/web3.js");
+
+/* WOLVERINE_CONN_BEGIN */
+let solanaWeb3;
+try { solanaWeb3 = require("@solana/web3.js"); } catch(e) { solanaWeb3 = null; }
+const SOLANA_RPC = process.env.SOLANA_RPC || (solanaWeb3?.clusterApiUrl ? solanaWeb3.clusterApiUrl("mainnet-beta") : "https://api.mainnet-beta.solana.com");
+const connection = solanaWeb3 ? new solanaWeb3.Connection(SOLANA_RPC, "confirmed") : null;
+/* WOLVERINE_CONN_END */
+
+
+    function loadTraderOneKeypair() {
+      const secret = Uint8Array.from(JSON.parse(fs.readFileSync(TRADERONE_DEPOSIT_KEYFILE_LOCAL, "utf8")));
+      return Keypair.fromSecretKey(secret);
+    }
+
+    async function getUsdcSum(ownerPk) {
+      const tokRes = await connection.getParsedTokenAccountsByOwner(
+        ownerPk,
+        { mint: new PublicKey(USDC_MINT_LOCAL) },
+        "confirmed"
+      );
+      let usdc = 0;
+      for (const a of (tokRes.value || [])) {
+        const ui = a?.account?.data?.parsed?.info?.tokenAmount?.uiAmount;
+        const amtStr = a?.account?.data?.parsed?.info?.tokenAmount?.amount;
+        const dec = a?.account?.data?.parsed?.info?.tokenAmount?.decimals ?? 6;
+        if (ui !== null && ui !== undefined) usdc += Number(ui) || 0;
+        else if (amtStr) usdc += (Number(amtStr) || 0) / (10 ** dec);
+      }
+      return { usdc, accounts: (tokRes.value || []).length };
+    }
+
+    // IMPORTANT: app + connection must already exist in your server.js
+    
+/* WOLVERINE_ALIAS_BALANCES2_BEGIN */
+app.get("/wolverine/traderone/api/balances2", (req, res, next) => {
+  // forward to the same handler as /api/balances2 by rewriting url + calling next()
+  req.url = "/api/balances2" + (req._parsedUrl?.search || "");
+  next();
+});
+/* WOLVERINE_ALIAS_BALANCES2_END */
+
+app.get("/api/balances2", async (req, res) => {
+      try {
+        const wallet = (req.query.wallet || "").toString().trim();
+        if (!wallet) return res.status(400).json({ error: "wallet missing" });
+
+        const userPk = new PublicKey(wallet);
+        const traderKp = loadTraderOneKeypair();
+        const traderPk = traderKp.publicKey;
+
+        const [userLam, traderLam] = await Promise.all([
+          connection.getBalance(userPk, "confirmed"),
+          connection.getBalance(traderPk, "confirmed"),
+        ]);
+
+        const [userU, traderU] = await Promise.all([
+          getUsdcSum(userPk),
+          getUsdcSum(traderPk),
+        ]);
+
+        return res.json({
+          user:   { sol: userLam / 1e9,   usdc: userU.usdc,   usdcAccounts: userU.accounts },
+          trader: { sol: traderLam / 1e9, usdc: traderU.usdc, usdcAccounts: traderU.accounts },
+          traderWallet: traderPk.toBase58(),
+          usdcMint: USDC_MINT_LOCAL
+        });
+      } catch (e) {
+        return res.status(500).json({ error: e?.message || String(e) });
+      }
+    });
+
+    console.log("[WOLVERINE] balances2 route ready");
+  } catch (e) {
+    console.log("[WOLVERINE] balances2 init error:", e?.message || String(e));
+  }
+})();
+/* WOLVERINE_BALANCES2_END */
+

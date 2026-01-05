@@ -1,0 +1,138 @@
+/* WOLV_START_SIMPLE_V2 */
+(()=>{const W=window;const L=(...a)=>console.log("[WOLV]",...a);
+const STATUS=(t)=>{try{const el=document.querySelector("#status,#statusLine,[data-status]");if(el){if(/Status:/i.test(el.textContent||""))el.textContent="Status: "+t;else el.textContent=t;}}catch(e){}L(t);};
+
+const byText=(re)=>[...document.querySelectorAll("button,input[type=button],input[type=submit],a")].find(x=>re.test(((x.textContent||x.value||"")+"").trim()));
+const startBtn=()=>byText(/START\s*WOLVERINE|^START$/i);
+const connectBtn=()=>byText(/Connect\s*Wallet/i);
+
+const budgetEl=()=>document.querySelector("#budget,input[name=budget]")||[...document.querySelectorAll("input")].find(i=>/budget/i.test((i.id||"")+(i.name||"")+(i.placeholder||"")) )||[...document.querySelectorAll("input")].find(i=>i.type==="number"||/^[0-9.,]+$/.test(i.value||""));
+const budget=()=>{const el=budgetEl();const v=parseFloat(((el&&el.value)||"").toString().replace(",", "."));return isFinite(v)?v:0;};
+
+const findBot=()=>{try{const t=document.body.innerText||"";const m=t.match(/Adresse\s*:\s*([1-9A-HJ-NP-Za-km-z]{32,44})/i);if(m&&m[1])return m[1];}catch(e){}return (W.TRADERONE_WALLET||W.__TRADERONE_WALLET||"e8DbBrTJxRetx3HNFb83CsXMySETydHVLwxMzkjcVqh");};
+
+function ensureUI(){
+  if(document.querySelector("#wolvAsset"))return;
+  const b=budgetEl(), s=startBtn(); if(!s)return;
+  const wrap=document.createElement("span");wrap.style.display="inline-flex";wrap.style.gap="6px";wrap.style.alignItems="center";wrap.style.marginLeft="8px";
+  const selA=document.createElement("select");selA.id="wolvAsset";selA.innerHTML="<option value=\"SOL\">SOL</option><option value=\"USDC\">USDC</option>";
+  const selM=document.createElement("select");selM.id="wolvMode";selM.innerHTML="<option value=\"SEND\">SEND</option><option value=\"BUY\">BUY POD</option>";
+  selA.value=localStorage.getItem("WOLV_ASSET")||"SOL"; selM.value=localStorage.getItem("WOLV_MODE")||"SEND";
+  selA.onchange=()=>localStorage.setItem("WOLV_ASSET",selA.value);
+  selM.onchange=()=>localStorage.setItem("WOLV_MODE",selM.value);
+  wrap.appendChild(document.createTextNode("Asset:"));wrap.appendChild(selA);
+  wrap.appendChild(document.createTextNode("Mode:"));wrap.appendChild(selM);
+  if(b&&b.parentNode)b.parentNode.insertBefore(wrap,b.nextSibling); else s.parentNode.insertBefore(wrap,s.nextSibling);
+}
+const getAsset=()=>document.querySelector("#wolvAsset")?.value||localStorage.getItem("WOLV_ASSET")||"SOL";
+const getMode=()=>document.querySelector("#wolvMode")?.value||localStorage.getItem("WOLV_MODE")||"SEND";
+
+function addScript(src){return new Promise((res,rej)=>{const s=document.createElement("script");s.src=src;s.async=true;s.onload=()=>res(src);s.onerror=()=>rej(new Error("load fail "+src));document.head.appendChild(s);});}
+async function ensureLibs(){
+  if(W.solanaWeb3&&W.solanaWeb3.PublicKey)return W.solanaWeb3;
+  STATUS("Charge libs...");
+  const base="/wolverine/vendor/";
+  await addScript(base+"solana-web3.min.js");
+  await addScript(base+"spl-token.min.js");
+  if(!(W.solanaWeb3&&W.solanaWeb3.PublicKey))throw new Error("web3 not ready");
+  return W.solanaWeb3;
+}
+async function phantom(){
+  const P=W.phantom?.solana||W.solana; if(!P)throw new Error("Phantom introuvable");
+  if(!P.isConnected){
+    STATUS("Connect Phantom...");
+    await P.connect({onlyIfTrusted:false});
+  }
+  return P;
+}
+function conn(S){return W.__WOLV_CONN__||(W.__WOLV_CONN__=new S.Connection(W.__RPC__||W.RPC_URL||"https://lb.drpc.live/solana/Ah_pmhKMs0qntHMrHyHMTvqg8lcNcRkR8LWNEklbR4ac","confirmed"));}
+
+async function sendSOL(S,owner,to,amtSOL){
+  const c=conn(S);
+  const lamports=Math.round(amtSOL*1e9);
+  const ix=S.SystemProgram.transfer({fromPubkey:owner,toPubkey:to,lamports});
+  const {blockhash,lastValidBlockHeight}=await c.getLatestBlockhash("confirmed");
+  const tx=new S.Transaction({feePayer:owner,blockhash,lastValidBlockHeight}).add(ix);
+  return {tx,blockhash,lastValidBlockHeight,c};
+}
+async function sendUSDC(S,owner,to,amtUSDC){
+  const c=conn(S);
+  const T=W.splToken; if(!T)throw new Error("splToken missing");
+  const mint=new S.PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1");
+  const TOKEN_PROGRAM_ID=T.TOKEN_PROGRAM_ID||new S.PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+  const ASSOCIATED_TOKEN_PROGRAM_ID=T.ASSOCIATED_TOKEN_PROGRAM_ID||new S.PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+  const ata=(ownerPk)=>{const [a]=S.PublicKey.findProgramAddressSync([ownerPk.toBuffer(),TOKEN_PROGRAM_ID.toBuffer(),mint.toBuffer()],ASSOCIATED_TOKEN_PROGRAM_ID);return a;};
+  const fromAta=ata(owner), toAta=ata(to);
+  const ixs=[];
+  const toInfo=await c.getAccountInfo(toAta,"confirmed");
+  if(!toInfo && T.createAssociatedTokenAccountInstruction) ixs.push(T.createAssociatedTokenAccountInstruction(owner,toAta,to,mint,TOKEN_PROGRAM_ID,ASSOCIATED_TOKEN_PROGRAM_ID));
+  const amt=Math.round(amtUSDC*1e6);
+  if(!T.createTransferInstruction)throw new Error("transfer ix missing");
+  ixs.push(T.createTransferInstruction(fromAta,toAta,owner,amt,[],TOKEN_PROGRAM_ID));
+  const {blockhash,lastValidBlockHeight}=await c.getLatestBlockhash("confirmed");
+  const tx=new S.Transaction({feePayer:owner,blockhash,lastValidBlockHeight}); ixs.forEach(ix=>tx.add(ix));
+  return {tx,blockhash,lastValidBlockHeight,c};
+}
+
+async function jupSwap(S,P,asset,amount){
+  const proxy=W.PROXY_BASE||localStorage.getItem("PROXY_BASE")||"https://bbtrader-jup.paycashnostory.workers.dev";
+  const userPk=new S.PublicKey(P.publicKey.toString());
+  const inMint = asset==="USDC" ? "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1" : "So11111111111111111111111111111111111111112";
+  const outMint = "AhSGcUDNK2MKkWQe4Mz7rCPSyTJNxvtGCTuJnpUjpump";
+  const amt = asset==="USDC" ? Math.round(amount*1e6) : Math.round(amount*1e9);
+  STATUS("Quote Jupiter...");
+  const qUrl = proxy.replace(/\/$/,"")+"/v6/quote?inputMint="+encodeURIComponent(inMint)+"&outputMint="+encodeURIComponent(outMint)+"&amount="+amt+"&slippageBps=300";
+  const qr=await fetch(qUrl,{method:"GET"}); if(!qr.ok)throw new Error("quote fail");
+  const quote=await qr.json();
+  STATUS("Swap TX...");
+  const sr=await fetch(proxy.replace(/\/$/,"")+"/v6/swap",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({quoteResponse:quote,userPublicKey:userPk.toBase58(),wrapAndUnwrapSol:true,dynamicComputeUnitLimit:true,prioritizationFeeLamports:"auto"})});
+  if(!sr.ok)throw new Error("swap fail");
+  const sw=await sr.json();
+  if(!sw.swapTransaction)throw new Error("swapTransaction missing");
+  const raw=Uint8Array.from(atob(sw.swapTransaction),c=>c.charCodeAt(0));
+  const tx=S.VersionedTransaction.deserialize(raw);
+  STATUS("Signature Phantom (popup)...");
+  const sig=await P.signAndSendTransaction(tx);
+  const txid=(sig.signature||sig).toString();
+  STATUS("Confirm...");
+  await conn(S).confirmTransaction(txid,"confirmed");
+  return txid;
+}
+
+async function start(){
+  ensureUI();
+  await ensureLibs();
+  const P=await phantom();
+  const S=W.solanaWeb3;
+  const owner=new S.PublicKey(P.publicKey.toString());
+  const bot=new S.PublicKey(findBot());
+  const amt=budget(); if(!(amt>0)) throw new Error("Budget invalide");
+  const asset=getAsset(); const mode=getMode();
+
+  if(mode==="BUY"){
+    const txid=await jupSwap(S,P,asset,amt);
+    try{await fetch("/api/start",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mode:"BUY",asset,budget:amt,from:owner.toBase58(),txid})});}catch(e){}
+    STATUS("OK");
+    return;
+  }
+
+  STATUS("Prépare TX...");
+  const pack = asset==="USDC" ? await sendUSDC(S,owner,bot,amt) : await sendSOL(S,owner,bot,amt);
+  STATUS("Signature Phantom (popup)...");
+  let txid;
+  if(P.signAndSendTransaction){const r=await P.signAndSendTransaction(pack.tx);txid=(r.signature||r).toString();}
+  else {const stx=await P.signTransaction(pack.tx);txid=await pack.c.sendRawTransaction(stx.serialize(),{skipPreflight:false});}
+  STATUS("Confirm...");
+  await pack.c.confirmTransaction({signature:txid,blockhash:pack.blockhash,lastValidBlockHeight:pack.lastValidBlockHeight},"confirmed");
+  try{await fetch("/api/start",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({mode:"SEND",asset,budget:amt,from:owner.toBase58(),to:bot.toBase58(),txid})});}catch(e){}
+  STATUS("OK");
+}
+
+function bind(){
+  const b=startBtn(); if(!b){setTimeout(bind,250);return;}
+  ensureUI();
+  b.addEventListener("click",(e)=>{e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();start().catch(err=>STATUS("ERR: "+(err&&err.message||err)));},true);
+  STATUS("READY");
+}
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",bind); else bind();
+})();

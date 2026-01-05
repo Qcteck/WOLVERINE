@@ -1,0 +1,44 @@
+// IMPORTANT: derrière nginx => même domaine => pas de CORS.
+// BASE = /wolverine/traderone/api  (proxifié vers localhost)
+const BASE = "/wolverine/traderone/api";
+
+const logEl = document.getElementById("log");
+const stEl = document.getElementById("st");
+const log = (t) => {
+  logEl.textContent = (new Date().toISOString()+"  "+t+"\n"+logEl.textContent).slice(0, 12000);
+};
+const setStatus = (ok) => {
+  stEl.textContent = ok ? "UP" : "DOWN";
+  stEl.style.color = ok ? "#b9ffcf" : "#ffb3b3";
+};
+
+async function req(method, url, body){
+  try{
+    const r = await fetch(url, {
+      method,
+      headers: body ? { "content-type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      cache: "no-store"
+    });
+    const txt = await r.text();
+    let out = txt;
+    try { out = JSON.stringify(JSON.parse(txt)); } catch {}
+    log(`${r.status} ${method} ${url} :: ${out.slice(0, 260)}`);
+    setStatus(r.ok);
+  }catch(e){
+    log(`ERR ${method} ${url} :: ${String(e).slice(0, 260)}`);
+    setStatus(false);
+  }
+}
+
+document.getElementById("bHealth").onclick = () => req("GET",  `${BASE}/health`);
+document.getElementById("bStatus").onclick = () => req("GET",  `${BASE}/status`);
+document.getElementById("bStart").onclick  = () => {
+  const budget = document.getElementById("budget").value || "0";
+  const mode   = document.getElementById("mode").value || "safe";
+  return req("POST", `${BASE}/start`, { budget, mode });
+};
+document.getElementById("bStop").onclick   = () => req("POST", `${BASE}/stop`, {});
+document.getElementById("bPingW").onclick  = () => req("GET",  `/wolverine/api/ping`);
+
+req("GET", `${BASE}/health`);

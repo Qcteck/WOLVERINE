@@ -1,0 +1,35 @@
+import fs from "fs";
+import readline from "readline";
+import bs58 from "bs58";
+
+const walletData = JSON.parse(fs.readFileSync("./wallet.json"));
+const PUBLIC_KEY = walletData.PUBLIC_KEY;
+const PRIVATE_KEY = walletData.PRIVATE_KEY;
+
+if (!PUBLIC_KEY || !PRIVATE_KEY) {
+  console.log("❌ Clé publique ou privée manquante. Sortie.");
+  process.exit(1);
+}
+
+const wallet = Keypair.fromSecretKey(bs58.decode(PRIVATE_KEY));
+const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
+
+console.log("🔑 Clé publique utilisée:", wallet.publicKey.toBase58());
+
+// Simule lecture de solde USDC
+const USDC_MINT = new PublicKey("EPjFWdd5AufqSSqeM2q8h5L8c7mY1v5d6D9r8Yk9Z6");
+
+async function main() {
+    try {
+        const accounts = await connection.getTokenAccountsByOwner(wallet.publicKey, { mint: USDC_MINT });
+        const balance = accounts.value.reduce(
+            (sum, acc) => sum + parseInt(acc.account.data.parsed.info.tokenAmount.amount),
+            0
+        );
+        console.log("💰 Solde USDC:", balance / 1e6);
+    } catch(err) {
+        console.log("❌ Erreur récupération solde:", err.message);
+    }
+}
+
+main();
